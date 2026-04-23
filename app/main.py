@@ -1,6 +1,7 @@
 import os
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -12,6 +13,13 @@ from app.api.query_router import router as query_router
 # Título visible en la doc OpenAPI — sirve como identificación humana del
 # servicio cuando hay varios corriendo detrás del mismo API gateway.
 app = FastAPI(title="Text to SQL with Guardrails")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # Limiter centralizado con Redis: los contadores persisten entre reinicios
 # y son compartidos en deployments multi-réplica. Sin storage_uri cada

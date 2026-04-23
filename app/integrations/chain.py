@@ -11,13 +11,32 @@ from app.integrations.llm_client import LLMError, _build_anthropic_fallback, _bu
 from app.schemas.sql_output import SQLOutput
 
 _PROMPT_TEMPLATE = """\
-Eres un experto en SQL. Dado el siguiente contexto de schema de base de datos,
-genera SQL para responder la pregunta del usuario.
+Eres un experto en SQL. Tu tarea es generar SQL válido y ejecutable basándote \
+EXCLUSIVAMENTE en el schema de base de datos proporcionado.
 
-Schema relevante:
+REGLAS — incumplirlas produce SQL inválido que falla en ejecución:
+
+1. SOLO puedes usar tablas y columnas que aparezcan literalmente en el schema de abajo.
+   Nunca inventes ni asumas columnas. Si no está en el schema, no existe.
+
+2. Antes de escribir SQL, identificá qué columnas del schema corresponden \
+   a los conceptos de la pregunta. Ejemplo: si el usuario dice "provincia" \
+   pero en el schema la columna se llama "city", usá "city".
+
+3. Si un concepto de la pregunta no tiene columna equivalente en el schema, \
+   usá la columna más cercana disponible Y explicá la limitación en \
+   response_hint. Nunca uses una columna que no exista.
+
+4. Usá siempre alias de tabla (alias.columna) cuando hay más de una tabla.
+
+5. Si es imposible responder la pregunta con las columnas disponibles, \
+   generá SQL válido con lo más cercano posible y explicalo en response_hint \
+   con confidence "low".
+
+Schema disponible (solo estas tablas y columnas existen):
 {schema_context}
 
-Pregunta: {query}
+Pregunta del usuario: {query}
 
 {format_instructions}"""
 
