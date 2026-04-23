@@ -8,3 +8,32 @@ wheels/
 
 # Virtual environments
 .venv
+
+# ─── SECRETOS — nunca versionar ───────────────────────────────────────────────
+# .env contiene API keys, credenciales de DB y secrets. Solo .env.example
+# (sin valores reales) se versiona como referencia del contrato de config.
+.env
+.env.*
+!.env.example
+
+# ─── Herramientas y sistema ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ─── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.code-workspace
+CLAUDE.md
+
+# ─── Tests y cobertura ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ─── uv / pip ─────────────────────────────────────────────────────────────────
+# uv.lock SÍ se versiona — asegura builds reproducibles en CI
+pip-wheel-metadata/

@@ -1,0 +1,94 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Sobreescribimos localhost por nombres de servicio Docker
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/text_to_sql
+    depends_on:
+      - postgres
+      - redis
+
+  # pgvector/pgvector:pg15 trae la extensión precompilada; `postgres:15` no.
+  postgres:
+    image: pgvector/pgvector:pg15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: text_to_sql
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run celery -A app.services.tasks worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/text_to_sql
+    depends_on:
+      - redis
+      - postgres
+
+  # Beat corre separado del worker: combinados en un solo proceso dispararía
+  # el schedule N veces si hay múltiples réplicas.
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run celery -A app.services.tasks beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/text_to_sql
+    depends_on:
+      - redis
+      - postgres
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run celery -A app.services.tasks flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - celery_worker
+
+  # Puerto 5434 en host para no colisionar con el postgres de dev en 5432.
+  postgres_test:
+    image: pgvector/pgvector:pg15
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: test_text_to_sql
+    tmpfs:
+      - /var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  redis_data:
