@@ -29,7 +29,7 @@ flowchart TD
     SetCache --> Exec
 
     Exec --> Result[SQLResult]
-    Client -->|GET /api/v1/query/{task_id}| Result
+    Client -->|"GET /api/v1/query/{task_id}"| Result
     Result -->|HTTP 200 SQLResult + filas reales| Client
 ```
 
