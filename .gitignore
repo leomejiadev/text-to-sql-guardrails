@@ -27,6 +27,10 @@ Thumbs.db
 .vscode/
 *.code-workspace
 CLAUDE.md
+DEPLOY.md
+.agents
+.claude
+skills-lock.json
 
 # ─── Tests y cobertura ────────────────────────────────────────────────────────
 .pytest_cache/

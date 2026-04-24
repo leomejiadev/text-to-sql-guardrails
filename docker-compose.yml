@@ -8,12 +8,23 @@ services:
     env_file:
       - .env
     environment:
-      # Sobreescribimos localhost por nombres de servicio Docker
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/text_to_sql
+      - CLIENT_DATABASE_URL=postgresql+psycopg2://test:test@postgres_client:5432/client_test
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      postgres_client:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      # python:slim no trae curl/wget — usamos urllib de la stdlib
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # pgvector/pgvector:pg15 trae la extensión precompilada; `postgres:15` no.
   postgres:
@@ -26,6 +37,11 @@ services:
       POSTGRES_DB: text_to_sql
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d text_to_sql"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -44,9 +60,14 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/text_to_sql
+      - CLIENT_DATABASE_URL=postgresql+psycopg2://test:test@postgres_client:5432/client_test
     depends_on:
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      postgres_client:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   # Beat corre separado del worker: combinados en un solo proceso dispararía
   # el schedule N veces si hay múltiples réplicas.
@@ -60,9 +81,14 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/text_to_sql
+      - CLIENT_DATABASE_URL=postgresql+psycopg2://test:test@postgres_client:5432/client_test
     depends_on:
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      postgres_client:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   flower:
     build:
@@ -76,6 +102,64 @@ services:
     depends_on:
       - redis
       - celery_worker
+
+  # DB del cliente simulada — mismas credenciales que la DB manual anterior.
+  # Los scripts en docker/init_client/ se ejecutan al crear el volumen por primera vez.
+  # Puerto 5433 en host para acceso directo desde herramientas locales (DBeaver, psql).
+  postgres_client:
+    image: postgres:15
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: client_test
+    volumes:
+      - postgres_client_data:/var/lib/postgresql/data
+      - ./docker/init_client:/docker-entrypoint-initdb.d
+    healthcheck:
+      # pg_isready solo confirma que el server acepta conexiones, no que los
+      # init scripts terminaron. Pero los scripts corren ANTES de que el server
+      # acepte conexiones externas, así que healthy = seed ya aplicado.
+      test: ["CMD-SHELL", "pg_isready -U test -d client_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Servicio one-shot: espera a que la api esté sana y dispara el reindex.
+  # restart: no garantiza que solo corra una vez por `docker compose up`.
+  init_seeder:
+    image: curlimages/curl:latest
+    command: >
+      sh -c "
+        echo '→ Disparando reindex-schema...' &&
+        curl -sf -X POST http://api:8000/api/v1/admin/reindex-schema &&
+        echo '✓ Reindex completado. El sistema está listo para recibir queries.' ||
+        echo '✗ Reindex falló. Corré manualmente: curl -X POST http://localhost:8000/api/v1/admin/reindex-schema'
+      "
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # Etapa dev: vite dev server con HMR, no el build de producción
+      target: dev
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      # src/ montado para que HMR detecte cambios sin rebuild del contenedor
+      - ./frontend/src:/app/src
+      # Aísla node_modules del contenedor del host (evita conflictos de plataforma)
+      - /app/node_modules
+    depends_on:
+      api:
+        condition: service_healthy
 
   # Puerto 5434 en host para no colisionar con el postgres de dev en 5432.
   postgres_test:
@@ -91,4 +175,5 @@ services:
 
 volumes:
   postgres_data:
+  postgres_client_data:
   redis_data:

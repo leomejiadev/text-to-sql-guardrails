@@ -25,7 +25,7 @@ def _make_service(mock_sql: str) -> tuple[QueryService, MagicMock]:
     mock_embedding.embed.return_value = [0.1] * 3072
 
     mock_schema_repo = MagicMock()
-    mock_schema_repo.find_relevant_tables.return_value = ["users"]
+    mock_schema_repo.find_relevant_tables.return_value = [{"table_name": "users", "schema_text": "Tabla users..."}]
 
     mock_query_repo = MagicMock()
     mock_session = MagicMock()

@@ -2,6 +2,10 @@
 
 Requieren Redis y Postgres corriendo. Correr con:
     pytest tests/integration/test_celery_pipeline.py -m integration -v
+
+Estrategia: pre-poblar Redis cache antes de despachar la tarea.
+El worker lee el cache y no llama al LLM — los tests verifican
+infraestructura (broker, backend, serialización, red Docker), no lógica de negocio.
 """
 import hashlib
 import os
@@ -14,72 +18,75 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def celery_worker_available():
-    """Verifica que el worker Celery esté accesible vía Redis."""
+    """Verifica que el worker Celery pueda procesar tareas enviando un ping real."""
     from app.services.tasks import celery_app
 
-    inspector = celery_app.control.inspect(timeout=3)
-    active = inspector.active()
-    if not active:
+    # ping() envía un mensaje y espera respuesta — garantiza que el worker
+    # puede recibir y procesar tareas, no solo que está conectado a Redis
+    responses = celery_app.control.ping(timeout=3)
+    if not responses:
         pytest.skip("Celery worker no disponible — saltando test de integración")
+
+
+@pytest.fixture(scope="module")
+def redis_client():
+    return redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 
 class TestCeleryPipeline:
 
-    def test_task_result_available_in_redis(self, celery_worker_available):
-        """La tarea llega al worker y el resultado queda disponible en Redis."""
-        from unittest.mock import patch
+    def test_task_result_serializes_through_redis(self, celery_worker_available, redis_client):
+        """Verifica serialización completa: broker → worker → Redis backend → proceso de test."""
         from app.schemas.sql_output import SQLOutput
         from app.services import tasks
 
-        sql_out = SQLOutput(
-            sql="SELECT * FROM users",
-            detected_language="en",
-            confidence="high",
-            tables_used=["users"],
-            response_hint="todos los usuarios",
-        )
-
-        with patch("app.services.tasks._run_pipeline", return_value=sql_out):
-            async_result = tasks.process_query.delay(
-                query="show all users", user_id="integration-user"
-            )
-            result = async_result.get(timeout=10)
-
-        assert result["sql"] == "SELECT * FROM users"
-
-    def test_cache_hit_avoids_llm_on_second_identical_query(self, celery_worker_available):
-        """Segunda query idéntica usa cache Redis y no llama al LLM."""
-        from unittest.mock import patch
-        from app.schemas.sql_output import SQLOutput
-        from app.services import tasks
-
-        query = "unique integration test query 12345"
+        query = "infrastructure serialization test celery broker"
         cache_key = hashlib.md5(query.strip().lower().encode()).hexdigest()
 
-        r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
-        r.delete(cache_key)
-
+        # Pre-poblar cache: el worker lee esto y ejecuta el SQL sin llamar al LLM
+        # SELECT 1 es válido en cualquier PostgreSQL — no depende de tablas del cliente
         sql_out = SQLOutput(
-            sql="SELECT id FROM users",
+            sql="SELECT 1 AS result",
+            detected_language="en",
+            confidence="high",
+            tables_used=["schema_embeddings"],
+            response_hint="test de infraestructura",
+        )
+        redis_client.setex(cache_key, 60, sql_out.model_dump_json())
+
+        try:
+            async_result = tasks.process_query.delay(query=query, user_id="integration-user")
+            result = async_result.get(timeout=15)
+        finally:
+            redis_client.delete(cache_key)
+
+        assert isinstance(result, dict)
+        assert result["sql"] == "SELECT 1 AS result"
+        assert result["row_count"] == 1
+
+    def test_cache_hit_avoids_llm_on_second_identical_query(self, celery_worker_available, redis_client):
+        """Worker lee del cache Redis: devuelve el SQL cacheado, no una respuesta del LLM."""
+        from app.schemas.sql_output import SQLOutput
+        from app.services import tasks
+
+        query = "unique sentinel query for cache hit test xyz789"
+        cache_key = hashlib.md5(query.strip().lower().encode()).hexdigest()
+
+        # SQL sentinel imposible de generar orgánicamente por el LLM:
+        # si el resultado contiene este valor, el worker leyó del cache
+        sentinel_sql = "SELECT 'cache_hit_sentinel_abc123' AS proof"
+        sql_out = SQLOutput(
+            sql=sentinel_sql,
             detected_language="en",
             confidence="high",
             tables_used=["users"],
-            response_hint="IDs de usuarios",
+            response_hint="prueba de cache hit",
         )
+        redis_client.setex(cache_key, 60, sql_out.model_dump_json())
 
-        def fake_pipeline(q, user_id):
-            # Simula primera ejecución real: guarda en cache y retorna
-            r.setex(cache_key, 3600, sql_out.model_dump_json())
-            return sql_out
+        try:
+            result = tasks.process_query.delay(query=query, user_id="u1").get(timeout=15)
+        finally:
+            redis_client.delete(cache_key)
 
-        with patch("app.services.tasks._run_pipeline", side_effect=fake_pipeline):
-            tasks.process_query.delay(query=query, user_id="u1").get(timeout=10)
-
-        # Segunda llamada — cache hit, _run_pipeline no debe ser invocado
-        with patch("app.services.tasks._run_pipeline") as mock_pipeline:
-            mock_pipeline.return_value = sql_out
-            tasks.process_query.delay(query=query, user_id="u2").get(timeout=10)
-
-        mock_pipeline.assert_not_called()
-
-        r.delete(cache_key)
+        assert result["sql"] == sentinel_sql

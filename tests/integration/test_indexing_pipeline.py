@@ -44,7 +44,7 @@ def test_find_relevant_tables_returns_semantically_similar_results(db_session, e
 
     assert isinstance(result, list)
     assert len(result) > 0
-    assert result[0] == "clientes"
+    assert result[0]["table_name"] == "clientes"
 
 
 @pytest.mark.integration

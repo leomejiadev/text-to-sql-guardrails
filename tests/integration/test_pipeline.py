@@ -39,7 +39,8 @@ def _make_output(sql: str = "SELECT * FROM orders") -> SQLOutput:
 def _build_service(chain, session) -> QueryService:
     embedding_service = MagicMock()
     schema_repository = MagicMock()
-    schema_repository.find_relevant_tables.return_value = ["orders"]
+    schema_repository.find_relevant_tables.return_value = [{"table_name": "orders", "schema_text": "Tabla orders..."}]
+    schema_repository.get_valid_sql_tables.return_value = {"orders"}
     query_repository = MagicMock()
     query_repository.execute_sql.return_value = [{"id": 1}]
     return QueryService(embedding_service, schema_repository, query_repository, chain, session)
@@ -51,7 +52,7 @@ def test_pipeline_end_to_end_with_mocked_llm(history_session):
     chain.run.return_value = _make_output()
     service = _build_service(chain, history_session)
     results = service.process("show all orders", "user_1")
-    assert len(results) == 1
+    assert results.row_count == 1
 
 
 @pytest.mark.integration
@@ -60,7 +61,7 @@ def test_destructive_query_blocked_before_query_repository(history_session):
     chain.run.return_value = _make_output(sql="DROP TABLE orders")
     embedding_service = MagicMock()
     schema_repository = MagicMock()
-    schema_repository.find_relevant_tables.return_value = ["orders"]
+    schema_repository.find_relevant_tables.return_value = [{"table_name": "orders", "schema_text": "Tabla orders..."}]
     query_repository = MagicMock()
     service = QueryService(
         embedding_service, schema_repository, query_repository, chain, history_session

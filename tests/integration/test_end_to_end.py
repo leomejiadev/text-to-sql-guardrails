@@ -90,7 +90,7 @@ def test_reindex_manual_indexes_tables_and_returns_count(app_client):
     # IndexingService es síncrono en el proceso HTTP (no Celery), por eso
     # se puede mockear con patch aquí — no afecta al worker.
     with patch("app.api.admin_router.IndexingService") as mock_svc:
-        mock_svc.return_value.reindex.return_value = 3
+        mock_svc.return_value.reindex.return_value = {"reindexed_tables": 3, "status": "success"}
 
         response = app_client.post("/api/v1/admin/reindex-schema")
 

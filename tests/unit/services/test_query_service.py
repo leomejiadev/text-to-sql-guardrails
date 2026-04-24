@@ -19,7 +19,8 @@ def _make_output(sql: str = "SELECT * FROM orders") -> SQLOutput:
 def deps():
     embedding_service = MagicMock()
     schema_repository = MagicMock()
-    schema_repository.find_relevant_tables.return_value = ["orders"]
+    schema_repository.find_relevant_tables.return_value = [{"table_name": "orders", "schema_text": "Tabla orders..."}]
+    schema_repository.get_valid_sql_tables.return_value = {"orders"}
     query_repository = MagicMock()
     query_repository.execute_sql.return_value = [{"id": 1, "total": 100}]
     chain = MagicMock()

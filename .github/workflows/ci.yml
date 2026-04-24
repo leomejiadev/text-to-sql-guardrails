@@ -1,0 +1,125 @@
+name: CI
+
+# Se dispara en cada push a main y en cada Pull Request hacia main.
+# Railway escucha el evento "push a main" directamente desde GitHub —
+# nosotros solo controlamos QUÉ llega a main (protegiendo la rama).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─── Job 1: tests unitarios ──────────────────────────────────────────────
+  # No necesita DB ni Redis — todo mockeado. Corre primero para fallar rápido.
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Instalar dependencias (incluyendo dev)
+        run: uv sync --frozen
+
+      - name: Correr tests unitarios
+        run: uv run pytest tests/unit -v
+        env:
+          # Los tests unitarios mockean todo, pero algunas imports necesitan
+          # que las variables existan (aunque sea con valor dummy).
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/text_to_sql
+          CLIENT_DATABASE_URL: postgresql+psycopg2://test:test@localhost:5433/client_test
+          REDIS_URL: redis://localhost:6379/0
+          GEMINI_API_KEY: dummy-key-for-unit-tests
+          SECRET_KEY: dummy-secret-key
+          EMBEDDING_MODEL: models/gemini-embedding-001
+
+  # ─── Job 2: tests de integración ─────────────────────────────────────────
+  # Necesita PostgreSQL con pgvector y Redis reales.
+  # Solo corre si los tests unitarios pasan.
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    # GitHub Actions levanta estos servicios como contenedores Docker
+    # en la misma red que el job — accesibles en localhost desde los steps.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_text_to_sql
+        ports:
+          - 5434:5432
+        # El job espera hasta que este healthcheck pase antes de correr steps.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test_text_to_sql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      postgres_client:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: client_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d client_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Instalar dependencias
+        run: uv sync --frozen
+
+      - name: Seedear DB del cliente
+        # Aplica seed_starbucks.sql a postgres_client antes de los tests.
+        # psql viene preinstalado en ubuntu-latest.
+        run: |
+          psql postgresql://test:test@localhost:5433/client_test \
+            -f docker/init_client/seed_starbucks.sql
+        env:
+          PGPASSWORD: test
+
+      - name: Correr tests de integración
+        run: uv run pytest tests/integration -v -m integration
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/text_to_sql
+          TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5434/test_text_to_sql
+          CLIENT_DATABASE_URL: postgresql+psycopg2://test:test@localhost:5433/client_test
+          REDIS_URL: redis://localhost:6379/0
+          # GEMINI_API_KEY viene de los secretos del repo en GitHub.
+          # En Settings → Secrets and variables → Actions → New repository secret.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          EMBEDDING_MODEL: models/gemini-embedding-001

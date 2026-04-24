@@ -60,7 +60,7 @@ class TestQueryServiceCache:
 
         with patch.object(GuardrailFactory, "get_all", return_value=[]):
             service = _make_service(mock_chain, mock_redis)
-            service._schema_repository.find_relevant_tables.return_value = ["users"]
+            service._schema_repository.find_relevant_tables.return_value = [{"table_name": "users", "schema_text": "Tabla users..."}]
             result = service.process("show all users", "user-1")
 
         mock_chain.run.assert_called_once()
@@ -91,7 +91,7 @@ class TestQueryServiceCache:
 
         with patch.object(GuardrailFactory, "get_all", return_value=[]):
             service = _make_service(mock_chain, mock_redis)
-            service._schema_repository.find_relevant_tables.return_value = ["users"]
+            service._schema_repository.find_relevant_tables.return_value = [{"table_name": "users", "schema_text": "Tabla users..."}]
             service.process(query, "user-diferente")
 
         actual_key = mock_redis.get.call_args.args[0]

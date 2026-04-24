@@ -5,6 +5,7 @@ Desacoplado del resto del sistema: si cambia la DB del cliente,
 solo cambia este archivo.
 """
 import os
+from decimal import Decimal
 
 from sqlalchemy import create_engine, text
 
@@ -22,8 +23,13 @@ class QueryRepository:
         try:
             with self._engine.connect() as conn:
                 result = conn.execute(text(sql))
-                # RowMapping → dict estándar para desacoplar la respuesta de SQLAlchemy
-                return [dict(row._mapping) for row in result]
+                rows = []
+                for row in result:
+                    rows.append({
+                        key: float(val) if isinstance(val, Decimal) else val
+                        for key, val in row._mapping.items()
+                    })
+                return rows
         except Exception as exc:
             raise RuntimeError(f"Error al ejecutar SQL: {exc}") from exc
 

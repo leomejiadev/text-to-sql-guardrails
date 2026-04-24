@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from celery.schedules import timedelta
 from fastapi.testclient import TestClient
@@ -8,7 +10,15 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # El endpoint usa DATABASE_URL y CLIENT_DATABASE_URL en tiempo de request
+    # — en tests apuntamos ambas a la misma DB de test para evitar conexión real
+    test_url = os.getenv(
+        "TEST_DATABASE_URL",
+        "postgresql+psycopg2://postgres:postgres@localhost:5433/test_text_to_sql",
+    )
+    monkeypatch.setenv("DATABASE_URL", test_url)
+    monkeypatch.setenv("CLIENT_DATABASE_URL", test_url)
     return TestClient(app)
 
 

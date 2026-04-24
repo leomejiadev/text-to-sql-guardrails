@@ -13,10 +13,10 @@ def _check_env_vars() -> list[str]:
     """Verifica que todas las variables de entorno requeridas están definidas."""
     required = [
         "DATABASE_URL",
+        "CLIENT_DATABASE_URL",
         "REDIS_URL",
-        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
         "SECRET_KEY",
-        "REINDEX_INTERVAL_SECONDS",
     ]
     missing = [var for var in required if not os.getenv(var)]
     if missing:
@@ -55,37 +55,18 @@ def _check_redis() -> list[str]:
         return [f"REDIS: no responde — {exc}"]
 
 
-def _check_alembic_migrations() -> list[str]:
-    """Verifica que las migraciones están al día comparando revisión actual con head."""
+def _check_postgres_client() -> list[str]:
+    """Verifica que la DB del cliente responde."""
     try:
-        from alembic.config import Config
-        from alembic.runtime.migration import MigrationContext
-        from alembic.script import ScriptDirectory
-        import sqlalchemy
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, text
 
-        url = os.getenv("DATABASE_URL", "")
-        sync_url = url.replace("+asyncpg", "+psycopg2")
-
-        alembic_cfg = Config("alembic.ini")
-        script = ScriptDirectory.from_config(alembic_cfg)
-
-        # head puede ser múltiple en proyectos con branches de migración
-        heads = set(script.get_heads())
-
-        engine = create_engine(sync_url)
+        url = os.getenv("CLIENT_DATABASE_URL", "")
+        engine = create_engine(url, connect_args={"connect_timeout": 5})
         with engine.connect() as conn:
-            context = MigrationContext.configure(conn)
-            current = set(context.get_current_heads())
-
-        if current != heads:
-            return [
-                f"ALEMBIC: migraciones desactualizadas — "
-                f"actual={current or '(sin migrar)'}, head={heads}"
-            ]
+            conn.execute(text("SELECT 1"))
         return []
     except Exception as exc:
-        return [f"ALEMBIC: error al verificar migraciones — {exc}"]
+        return [f"POSTGRES_CLIENT: no responde — {exc}"]
 
 
 def main() -> None:
@@ -94,8 +75,8 @@ def main() -> None:
     # Acumulamos todos los errores antes de imprimir para mostrarlos juntos
     errors.extend(_check_env_vars())
     errors.extend(_check_postgres())
+    errors.extend(_check_postgres_client())
     errors.extend(_check_redis())
-    errors.extend(_check_alembic_migrations())
 
     if errors:
         print("❌ pre-deploy check FAILED:\n")

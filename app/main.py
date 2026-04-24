@@ -16,7 +16,7 @@ app = FastAPI(title="Text to SQL with Guardrails")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )

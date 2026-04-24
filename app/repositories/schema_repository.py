@@ -28,21 +28,52 @@ class SchemaRepository:
         )
         self._session.commit()
 
-    def find_relevant_tables(self, query: str) -> list[str]:
+    def index_document(self, doc_type: str, name: str, text_content: str) -> None:
+        """Indexa cualquier documento del knowledge base con su tipo explícito."""
+        vector = self._embedding.embed(text_content)
+        vec_str = str(vector)
+
+        self._session.execute(
+            text("""
+                INSERT INTO schema_embeddings (table_name, schema_text, embedding, document_type)
+                VALUES (:table_name, :schema_text, (:vec)::vector, :doc_type)
+                ON CONFLICT (table_name)
+                DO UPDATE SET
+                    schema_text   = EXCLUDED.schema_text,
+                    embedding     = EXCLUDED.embedding,
+                    document_type = EXCLUDED.document_type,
+                    updated_at    = now()
+            """),
+            {"table_name": name, "schema_text": text_content, "vec": vec_str, "doc_type": doc_type},
+        )
+        self._session.commit()
+
+    def find_relevant_tables(self, query: str) -> list[dict]:
         vector = self._embedding.embed(query)
         vec_str = str(vector)
 
         # <=> es el operador de cosine distance de pgvector
         rows = self._session.execute(
             text("""
-                SELECT table_name
+                SELECT table_name, schema_text
                 FROM schema_embeddings
                 ORDER BY embedding <=> (:vec)::vector
-                LIMIT 4
+                LIMIT 6
             """),
             {"vec": vec_str},
         )
-        return [row.table_name for row in rows]
+        return [{"table_name": row.table_name, "schema_text": row.schema_text} for row in rows]
+    
+    def get_valid_sql_tables(self) -> set[str]:
+        """Retorna nombres reales de tablas SQL (sin prefijo 'schema_') desde schema_embeddings."""
+        rows = self._session.execute(
+            text("""
+                SELECT REPLACE(table_name, 'schema_', '') AS sql_table
+                FROM schema_embeddings
+                WHERE document_type = 'schema'
+            """)
+        )
+        return {row.sql_table for row in rows}
 
     def reindex_all(self, schemas: dict[str, str]) -> None:
         for table_name, schema_text in schemas.items():

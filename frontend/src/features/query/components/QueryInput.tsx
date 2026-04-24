@@ -1,31 +1,32 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, useRef, type FormEvent, type KeyboardEvent } from 'react'
+
+const EXAMPLES = [
+  '¿Cuáles fueron los 5 sucursales con mayores ventas en enero?',
+  '¿Cuántos clientes hay por país?',
+  '¿Cuál es el producto más vendido del último trimestre?',
+  '¿Qué empleados trabajan en Buenos Aires?',
+  'Dame los 5 clientes que más gastaron',
+]
+
+const MAX_LENGTH = 500
 
 interface QueryInputProps {
   onSubmit: (query: string) => void
   isLoading: boolean
 }
 
-const EXAMPLES = [
-  '¿Cuántos usuarios se registraron en marzo?',
-  '¿Cuál es el producto más vendido del último trimestre?',
-]
-
-const MIN_LENGTH = 3
-const MAX_LENGTH = 500
-
 export function QueryInput({ onSubmit, isLoading }: QueryInputProps) {
   const [value, setValue] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const trimmed = value.trim()
-  const isValid = trimmed.length >= MIN_LENGTH && trimmed.length <= MAX_LENGTH
-  const canSubmit = isValid && !isLoading
+  const canSubmit = trimmed.length >= 3 && trimmed.length <= MAX_LENGTH && !isLoading
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (canSubmit) onSubmit(trimmed)
   }
 
-  // Enviar con Ctrl+Enter / Cmd+Enter sin bloquear saltos de línea normales
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault()
@@ -34,72 +35,99 @@ export function QueryInput({ onSubmit, isLoading }: QueryInputProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="w-full">
-      <div className="relative">
+    <div>
+      {/* textarea card */}
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border2)',
+          borderRadius: 14,
+          padding: '14px 16px',
+          marginBottom: 12,
+          transition: 'border-color 0.2s',
+        }}
+        onFocus={e => (e.currentTarget.style.borderColor = 'var(--purple)')}
+        onBlur={e => (e.currentTarget.style.borderColor = 'var(--border2)')}
+      >
         <textarea
+          ref={textareaRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={e => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Preguntá algo sobre tus datos..."
           disabled={isLoading}
           maxLength={MAX_LENGTH}
           rows={3}
-          className="w-full resize-none rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-3.5 pr-28 text-slate-100 placeholder-slate-500 outline-none transition-colors focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+          style={{
+            width: '100%', resize: 'none',
+            background: 'transparent', border: 'none', outline: 'none',
+            color: 'var(--text)', fontSize: 14.5,
+            fontFamily: 'var(--font-body)', lineHeight: 1.6,
+            caretColor: 'var(--purple)',
+          }}
         />
-
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="absolute bottom-3 right-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isLoading ? (
-            <span className="flex items-center gap-2">
-              <Spinner />
-              Analizando
-            </span>
-          ) : (
-            'Consultar'
-          )}
-        </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {navigator.platform?.includes('Mac') ? '⌘' : 'Ctrl'}+Enter para enviar
+          </span>
+          <button
+            type="button"
+            onClick={handleSubmit as unknown as React.MouseEventHandler}
+            disabled={!canSubmit}
+            style={{
+              background: isLoading ? 'rgba(124,58,237,0.3)' : 'var(--purple)',
+              border: 'none', borderRadius: 8,
+              padding: '8px 20px',
+              color: '#fff', fontSize: 13, fontWeight: 600,
+              cursor: !canSubmit ? 'not-allowed' : 'pointer',
+              fontFamily: 'var(--font-body)',
+              opacity: !trimmed && !isLoading ? 0.4 : 1,
+              transition: 'opacity 0.2s, background 0.2s',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            {isLoading && (
+              <span style={{
+                width: 12, height: 12,
+                border: '2px solid rgba(255,255,255,0.4)',
+                borderTopColor: '#fff', borderRadius: '50%',
+                display: 'inline-block',
+                animation: 'spin 0.7s linear infinite',
+              }} />
+            )}
+            Consultar
+          </button>
+        </div>
       </div>
 
-      <div className="mt-3 space-y-1">
-        {EXAMPLES.map((ex) => (
+      {/* example chips — siempre visibles */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const }}>
+        {EXAMPLES.map(ex => (
           <button
             key={ex}
             type="button"
-            onClick={() => setValue(ex)}
-            disabled={isLoading}
-            className="block text-left text-xs text-slate-500 transition-colors hover:text-indigo-400 disabled:pointer-events-none"
+            onClick={() => { setValue(ex); textareaRef.current?.focus() }}
+            style={{
+              background: 'rgba(255,255,255,0.035)',
+              border: '1px solid var(--border)',
+              borderRadius: 20, padding: '5px 12px',
+              color: 'var(--text-muted)', fontSize: 12,
+              cursor: 'pointer', fontFamily: 'var(--font-body)',
+              transition: 'border-color 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = 'var(--border2)'
+              e.currentTarget.style.color = 'var(--text-dim)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.color = 'var(--text-muted)'
+            }}
           >
-            Ej: {ex}
+            {ex}
           </button>
         ))}
       </div>
-
-      {value.length > MAX_LENGTH - 50 && (
-        <p className="mt-1 text-right text-xs text-slate-500">
-          {value.length}/{MAX_LENGTH}
-        </p>
-      )}
-    </form>
-  )
-}
-
-function Spinner() {
-  return (
-    <svg
-      className="h-4 w-4 animate-spin"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
+    </div>
   )
 }

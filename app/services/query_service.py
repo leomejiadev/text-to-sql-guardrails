@@ -60,7 +60,10 @@ class QueryService:
 
         # Paso 2: recuperar tablas semánticamente relevantes via pgvector
         relevant_tables = self._schema_repository.find_relevant_tables(query)
-        schema_context = "\n".join(relevant_tables)
+        schema_context = "\n\n".join(t["schema_text"] for t in relevant_tables)
+
+        # Nombres reales de tablas SQL (sin prefijos de documentos pgvector)
+        valid_sql_tables = self._schema_repository.get_valid_sql_tables()
 
         # Paso 3: generar SQLOutput via LCEL chain
         sql_output: SQLOutput = self._chain.run(
@@ -68,7 +71,7 @@ class QueryService:
         )
 
         # Paso 4: ejecutar todos los guardrails; el primero que bloquea corta el pipeline
-        guardrails = GuardrailFactory.get_all(valid_tables=set(relevant_tables))
+        guardrails = GuardrailFactory.get_all(valid_tables=valid_sql_tables)
         for guardrail in guardrails:
             result = guardrail.validate(sql_output)
             if result.blocked:
