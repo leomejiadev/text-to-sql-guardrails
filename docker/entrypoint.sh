@@ -17,4 +17,4 @@ echo "→ [4/5] Reindexando schemas + knowledge base..."
 uv run python scripts/reindex_all.py
 
 echo "→ [5/5] Iniciando API..."
-exec uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+exec uv run uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
