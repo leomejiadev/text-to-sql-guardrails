@@ -9,7 +9,7 @@ dockerfilePath = "Dockerfile"
 # Railway llama a este endpoint para saber si el servicio levantó bien.
 # Si no responde 200 en healthcheckTimeout segundos, Railway reinicia el contenedor.
 healthcheckPath = "/health"
-healthcheckTimeout = 300
+healthcheckTimeout = 600
 
 # Reiniciar automáticamente si el proceso muere (ej: error no capturado).
 restartPolicyType = "ON_FAILURE"
