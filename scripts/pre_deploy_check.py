@@ -16,6 +16,7 @@ def _check_env_vars() -> list[str]:
         "CLIENT_DATABASE_URL",
         "REDIS_URL",
         "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
         "SECRET_KEY",
     ]
     missing = [var for var in required if not os.getenv(var)]

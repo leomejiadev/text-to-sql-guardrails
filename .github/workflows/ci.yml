@@ -37,6 +37,7 @@ jobs:
           CLIENT_DATABASE_URL: postgresql+psycopg2://test:test@localhost:5433/client_test
           REDIS_URL: redis://localhost:6379/0
           GEMINI_API_KEY: dummy-key-for-unit-tests
+          ANTHROPIC_API_KEY: dummy-key-for-unit-tests
           SECRET_KEY: dummy-secret-key
           EMBEDDING_MODEL: models/gemini-embedding-001
 
@@ -121,5 +122,6 @@ jobs:
           # GEMINI_API_KEY viene de los secretos del repo en GitHub.
           # En Settings → Secrets and variables → Actions → New repository secret.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           EMBEDDING_MODEL: models/gemini-embedding-001
