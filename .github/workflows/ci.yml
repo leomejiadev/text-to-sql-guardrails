@@ -1,8 +1,6 @@
 name: CI
 
 # Se dispara en cada push a main y en cada Pull Request hacia main.
-# Railway escucha el evento "push a main" directamente desde GitHub —
-# nosotros solo controlamos QUÉ llega a main (protegiendo la rama).
 on:
   push:
     branches: [main]

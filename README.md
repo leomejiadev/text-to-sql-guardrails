@@ -1,8 +1,10 @@
 # Text to SQL with Guardrails
 
-**API production-ready que convierte lenguaje natural a SQL seguro y validado usando RAG, structured output con LLM y guardrails de seguridad multicapa.**
+**API production-ready que convierte lenguaje natural a SQL seguro y validado. El pipeline combina RAG de tres capas con structured output de Claude Haiku y guardrails de seguridad multicapa para garantizar que ningún SQL destructivo llegue a ejecutarse.**
 
-![Tests](https://img.shields.io/badge/tests-66%20passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.12-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688)
+El diferencial frente a un Text-to-SQL naive es el knowledge base enriquecido: en lugar de pasarle al LLM el schema crudo de la DB, el sistema construye contexto semántico en tres niveles — descripciones de tablas con sinónimos en lenguaje natural, patrones de JOIN para casos de negocio reales y ejemplos few-shot de pregunta→SQL resuelto. Ese contexto se indexa en pgvector y se recupera por similitud antes de cada generación, reduciendo alucinaciones y aumentando la precisión en queries complejos con múltiples tablas.
+
+![Tests](https://img.shields.io/badge/tests-68%20passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.13-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688)
 
 ---
 
@@ -43,7 +45,8 @@ flowchart TD
 | PostgreSQL + pgvector | DB interna de la app (historial de queries, embeddings de schema con búsqueda vectorial) |
 | Redis | Broker de Celery, cache de SQL generado, contadores de rate limit de slowapi |
 | Celery + Beat | Procesamiento asíncrono de queries, re-indexado periódico del schema |
-| LLM (OpenAI/Gemini) | Generación de SQL estructurado + embeddings de texto |
+| Gemini (Google AI) | Embeddings de texto (`gemini-embedding-001`) |
+| Claude Haiku (Anthropic) | Generación de SQL estructurado |
 | slowapi | Rate limiting por endpoint con contadores persistidos en Redis |
 | Alembic | Migraciones de base de datos, incluyendo setup de la extensión pgvector |
 | React + Vite | Frontend para ingresar consultas en lenguaje natural y visualizar resultados |
@@ -56,7 +59,7 @@ flowchart TD
 |---|---|---|
 | `api/` | routers | Routing HTTP y contratos de request/response. Sin lógica de negocio. |
 | `services/` | query_service, embedding_service, indexing_service, tasks | Orquestación entre capas. Los services llaman a repositories, nunca al revés. |
-| `integrations/` | llm_client, chain | Wrappers de clientes externos: API del LLM y chain LCEL. |
+| `integrations/` | llm_client, chain | Wrappers de clientes externos: Gemini para embeddings, Anthropic para SQL. |
 | `guardrails/` | factory, validators | Validación de SQL via Factory Pattern. Se agregan validators sin tocar services. |
 | `repositories/` | schema_repository, query_repository | Acceso a storage: búsqueda vectorial con pgvector e historial relacional de queries. |
 | `models/` | clases SQLModel | Definiciones de tablas de base de datos (`table=True`). |
@@ -87,6 +90,22 @@ Las queries destructivas nunca llegan a `QueryRepository`. El invariante es estr
 
 ---
 
+## RAG Enriquecido — El Knowledge Base
+
+El contexto que recibe el LLM no es el schema SQL crudo. Antes de generar, el sistema recupera por similitud vectorial los fragmentos más relevantes del knowledge base, que tiene tres capas:
+
+| Capa | Qué contiene | Ejemplo |
+|---|---|---|
+| **Schema** | Descripción de cada tabla con sinónimos en lenguaje natural, columnas, relaciones y cuándo usarla | `"Tabla 'branches' — sucursal, tienda, local, outlet…"` |
+| **Joins** | Cómo combinar tablas para casos de negocio reales, con el SQL exacto del JOIN | `"Ventas por país: orders → branches → cities → countries"` |
+| **Few-shot** | Pares pregunta real → SQL resuelto para guiar el modelo con ejemplos del dominio | `"¿Cuál es el producto más vendido este mes? → SELECT …"` |
+
+Este enfoque permite que el LLM resuelva correctamente preguntas en lenguaje coloquial ("¿qué tienda facturó más?") y queries con múltiples JOINs que un schema crudo no haría obvios.
+
+El knowledge base se carga una sola vez con `POST /api/v1/admin/reindex-knowledge` y se actualiza periódicamente via Celery Beat.
+
+---
+
 ## Correr Localmente
 
 ```bash
@@ -96,22 +115,26 @@ cd text-to-sql-guardrails
 
 # 2. Entorno
 cp .env.example .env
-# Editar .env — completar DATABASE_URL, CLIENT_DATABASE_URL, REDIS_URL, OPENAI_API_KEY, SECRET_KEY
+# Completar GEMINI_API_KEY, ANTHROPIC_API_KEY y SECRET_KEY en .env
 
-# 3. Levantar servicios
+# 3. Levantar stack backend (API + Celery + PostgreSQL + Redis)
 docker compose up --build
 
-# 4. Verificar entorno
-uv run python scripts/pre_deploy_check.py
-
-# 5. Tests sin Docker (63 tests — no requiere worker Celery)
-uv run pytest tests/unit/ tests/integration/test_guardrails_pipeline.py -v
-
-# 6. Suite completa (requiere worker corriendo)
-docker compose up -d celery_worker
-uv run pytest tests/unit/ tests/integration/test_guardrails_pipeline.py \
-              tests/integration/test_end_to_end.py -v
+# 4. (Opcional) Levantar también el frontend con HMR
+docker compose --profile dev up --build
 ```
+
+### Primer deploy en entorno cloud (AWS / Railway)
+
+Una vez que la API levanta, ejecutar estos endpoints en orden desde Swagger (`/docs`):
+
+```
+POST /api/v1/admin/seed-client      → carga datos de prueba en la DB del cliente
+POST /api/v1/admin/reindex-schema   → indexa el schema de la DB en pgvector
+POST /api/v1/admin/reindex-knowledge → indexa el knowledge base (joins, few-shots)
+```
+
+Estos pasos son idempotentes — si ya hay datos no modifican nada.
 
 ---
 
@@ -119,15 +142,37 @@ uv run pytest tests/unit/ tests/integration/test_guardrails_pipeline.py \
 
 | Variable | Descripción | Requerida |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL interna de la app (historial de queries, embeddings de schema) | Sí |
-| `CLIENT_DATABASE_URL` | PostgreSQL del cliente (datos de negocio, consultada por `execute_sql`) | Sí |
+| `DATABASE_URL` | PostgreSQL interna (historial de queries y embeddings de schema). Formato asyncpg: `postgresql+asyncpg://...` | Sí |
+| `CLIENT_DATABASE_URL` | PostgreSQL del cliente (datos de negocio consultados por `execute_sql`). Formato psycopg2: `postgresql+psycopg2://...` | Sí |
 | `REDIS_URL` | Redis para broker Celery, cache SQL y contadores de rate limit | Sí |
-| `OPENAI_API_KEY` | API key del proveedor LLM | Sí |
+| `GEMINI_API_KEY` | API key de Google AI Studio — usada para embeddings (`gemini-embedding-001`) | Sí |
+| `ANTHROPIC_API_KEY` | API key de Anthropic — usada para generación de SQL (Claude Haiku) | Sí |
 | `SECRET_KEY` | Clave para signing interno | Sí |
+| `EMBEDDING_MODEL` | Modelo de embeddings de Gemini | No (default: `models/gemini-embedding-001`) |
 | `REINDEX_INTERVAL_SECONDS` | Frecuencia del re-indexado periódico del schema | No (default: `86400`) |
-| `LLM_PROVIDER` | Proveedor LLM activo | No (default: `openai`) |
 
-> `CLIENT_DATABASE_URL` es la base de datos del cliente — donde viven sus datos de negocio. Es distinta de `DATABASE_URL`, que es la DB interna de la app donde se almacenan `query_history` y los embeddings de schema.
+> `CLIENT_DATABASE_URL` es la base de datos del cliente — donde viven sus datos de negocio. Es distinta de `DATABASE_URL`, que es la DB interna donde se almacenan `query_history` y los embeddings de schema.
+
+---
+
+## Frontend
+
+Single-page app React + Vite en `frontend/`. En producción se despliega en **Vercel** apuntando a `VITE_API_URL` de la API en AWS.
+
+Para desarrollo local con HMR:
+
+```bash
+# Con Docker (recomendado — mismo entorno que producción)
+docker compose --profile dev up
+
+# Sin Docker
+cd frontend
+cp .env.example .env.local   # setear VITE_API_URL=http://localhost:8000
+npm ci
+npm run dev
+```
+
+El `task_id` devuelto por el POST vive solo en el closure del `setInterval` — nunca toca el DOM y es liberado por el garbage collector cuando el polling termina.
 
 ---
 
@@ -138,18 +183,7 @@ uv run pytest tests/unit/ tests/integration/test_guardrails_pipeline.py \
 3. **Redis como storage de slowapi, no memoria** — con contadores en memoria cada réplica del proceso tiene su propio límite, multiplicando efectivamente la tasa permitida por el número de workers.
 4. **`task_id` nunca llega al DOM en el frontend** — vive solo en el closure del `setInterval`, evitando problemas de estado obsoleto si el componente se re-renderiza durante el polling.
 5. **La posición de guardrails garantiza el invariante** — ubicar guardrails antes de `cache.setex` y `execute_sql` significa que ningún SQL destructivo se cachea ni se ejecuta, por construcción.
-
----
-
-## Frontend
-
-Single-page app React + Vite en `frontend/` para ingresar consultas en lenguaje natural y visualizar resultados.
-
-```bash
-cd frontend && cp .env.example .env.local && npm run dev
-```
-
-El `task_id` devuelto por el POST vive solo en el closure del `setInterval` — nunca toca el DOM y es liberado por el garbage collector cuando el polling termina.
+6. **Entrypoint sin seed ni reindex** — deploy en ~30s. El seed y el reindex se invocan una sola vez manualmente via endpoints admin después del primer deploy.
 
 ---
 
