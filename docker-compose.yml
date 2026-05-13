@@ -126,36 +126,21 @@ services:
       timeout: 5s
       retries: 10
 
-  # Servicio one-shot: espera a que la api esté sana y dispara el reindex.
-  # restart: no garantiza que solo corra una vez por `docker compose up`.
-  init_seeder:
-    image: curlimages/curl:latest
-    command: >
-      sh -c "
-        echo '→ Disparando reindex-schema...' &&
-        curl -sf -X POST http://api:8000/api/v1/admin/reindex-schema &&
-        echo '✓ Reindex completado. El sistema está listo para recibir queries.' ||
-        echo '✗ Reindex falló. Corré manualmente: curl -X POST http://localhost:8000/api/v1/admin/reindex-schema'
-      "
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: "no"
-
+  # Solo levanta con: docker compose --profile dev up
+  # En producción el frontend vive en Vercel — no hace falta correrlo localmente
+  # a menos que quieras probar el stack completo contra la API local.
   frontend:
+    profiles: [dev]
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      # Etapa dev: vite dev server con HMR, no el build de producción
       target: dev
     ports:
       - "3000:3000"
     environment:
       - VITE_API_URL=http://localhost:8000
     volumes:
-      # src/ montado para que HMR detecte cambios sin rebuild del contenedor
       - ./frontend/src:/app/src
-      # Aísla node_modules del contenedor del host (evita conflictos de plataforma)
       - /app/node_modules
     depends_on:
       api:

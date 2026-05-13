@@ -1,7 +1,8 @@
 """Seedea la DB del cliente si está vacía.
 
 Idempotente: si las tablas ya existen con datos, no hace nada.
-Necesario en Railway porque no hay bind mounts para docker-entrypoint-initdb.d.
+Necesario en entornos cloud (AWS RDS, etc.) donde no hay bind mounts
+para docker-entrypoint-initdb.d.
 """
 import os
 import sys
@@ -19,25 +20,22 @@ def _client_db_is_empty(conn) -> bool:
     return result.scalar() == 0
 
 
-def main() -> None:
+def run() -> dict:
+    """Ejecuta el seed y retorna el resultado. Importable desde el admin router."""
     url = os.getenv("CLIENT_DATABASE_URL")
     if not url:
-        print("CLIENT_DATABASE_URL no definida — saltando seed")
-        sys.exit(0)
+        return {"seeded": False, "message": "CLIENT_DATABASE_URL no definida"}
 
     engine = create_engine(url)
 
     with engine.connect() as conn:
         if not _client_db_is_empty(conn):
-            print("→ DB del cliente ya tiene datos — seed omitido")
-            return
+            return {"seeded": False, "message": "DB del cliente ya tiene datos — seed omitido"}
 
     seed_path = os.path.abspath(SEED_FILE)
     if not os.path.exists(seed_path):
-        print(f"✗ Archivo de seed no encontrado: {seed_path}")
-        sys.exit(1)
+        raise FileNotFoundError(f"Archivo de seed no encontrado: {seed_path}")
 
-    print(f"→ Seeding DB del cliente desde {seed_path}...")
     with open(seed_path) as f:
         sql = f.read()
 
@@ -45,8 +43,11 @@ def main() -> None:
         conn.execute(text(sql))
         conn.commit()
 
-    print("✓ Seed del cliente completado")
+    return {"seeded": True, "message": "Seed del cliente completado"}
 
 
 if __name__ == "__main__":
-    main()
+    result = run()
+    if not result["seeded"] and "no definida" in result["message"]:
+        sys.exit(0)
+    print(result["message"])

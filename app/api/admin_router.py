@@ -16,6 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from knowledge_base import get_all_documents
+from scripts.seed_client_db import run as seed_run
 
 from app.repositories.query_repository import QueryRepository
 from app.repositories.schema_repository import SchemaRepository
@@ -99,3 +100,20 @@ async def reindex_knowledge(request: Request) -> JSONResponse:
             status_code=500,
             content={"message": "knowledge reindex failed", "detail": str(e)},
         )
+
+
+@router.post("/seed-client")
+@limiter.limit("3/hour")
+async def seed_client(request: Request) -> JSONResponse:
+    """Seedea la DB del cliente con datos iniciales si está vacía.
+
+    Idempotente: si la DB ya tiene datos, retorna sin modificar nada.
+    Útil en entornos cloud (AWS RDS) donde no hay docker-entrypoint-initdb.d.
+    """
+    try:
+        result = seed_run()
+        return JSONResponse(status_code=200, content=result)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=500, content={"message": "seed failed", "detail": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": "seed failed", "detail": str(e)})
