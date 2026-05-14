@@ -1,8 +1,8 @@
 {
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "http://text-to-sql-alb-1173882779.sa-east-1.elb.amazonaws.com/:path*"
+      "source": "/api/v1/:path*",
+      "destination": "http://text-to-sql-alb-1173882779.sa-east-1.elb.amazonaws.com/api/v1/:path*"
     },
     {
       "source": "/(.*)",

@@ -22,8 +22,9 @@ app.add_middleware(
         "http://localhost:3002",
         os.getenv("FRONTEND_URL", ""),
     ],
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=True,
 )
 
 # Limiter centralizado con Redis: los contadores persisten entre reinicios
