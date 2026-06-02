@@ -1,9 +1,4 @@
-"""
-Repository responsable de ejecutar SQL validado contra la DB
-relacional del cliente. Solo lectura — nunca escribe datos.
-Desacoplado del resto del sistema: si cambia la DB del cliente,
-solo cambia este archivo.
-"""
+"""Repository de lectura sobre la DB del cliente."""
 import os
 from decimal import Decimal
 
@@ -12,7 +7,6 @@ from sqlalchemy import create_engine, text
 
 class QueryRepository:
     def __init__(self, engine=None, db_url: str = None):
-        # engine se acepta directamente para facilitar el mocking en tests unitarios
         if engine is not None:
             self._engine = engine
         else:

@@ -8,7 +8,6 @@ class IndexingService:
         query_repository: QueryRepository,
         schema_repository: SchemaRepository,
     ):
-        # Inyección de dependencias: el servicio no sabe de qué DB ni de qué vector store
         self._query_repo = query_repository
         self._schema_repo = schema_repository
 

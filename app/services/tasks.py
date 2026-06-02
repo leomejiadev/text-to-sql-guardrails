@@ -42,11 +42,10 @@ celery_app.conf.update(
 )
 
 
-def _run_pipeline(query: str, user_id: str) -> SQLOutput:
-    """Construye todas las dependencias y ejecuta el pipeline sincrónico.
-
-    Función separada para permitir mocking limpio en tests unitarios.
-    """
+def _run_pipeline(
+    query: str, user_id: str, trace_id: str | None = None
+) -> SQLOutput:
+    """Construye las dependencias y ejecuta el pipeline sincrónico para una consulta."""
     # asyncpg no soporta uso sincrónico; psycopg2 es el driver sync
     sync_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "+psycopg2")
     engine = create_engine(sync_url)
@@ -59,13 +58,15 @@ def _run_pipeline(query: str, user_id: str) -> SQLOutput:
             chain=SQLChain(),
             session=session,
         )
-        return service.process(query, user_id)
+        return service.process(query, user_id, trace_id=trace_id)
 
 
 @celery_app.task(bind=True, max_retries=3)
-def process_query(self, query: str, user_id: str) -> dict:
+def process_query(
+    self, query: str, user_id: str, trace_id: str | None = None
+) -> dict:
     try:
-        result: SQLOutput = _run_pipeline(query, user_id)
+        result: SQLOutput = _run_pipeline(query, user_id, trace_id)
         return result.model_dump()
     except QueryBlockedError as exc:
         # Bloqueo es resultado esperado del negocio — no debe crashear el worker

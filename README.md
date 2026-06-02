@@ -1,16 +1,94 @@
 # Text to SQL with Guardrails
 
-**API production-ready que convierte lenguaje natural a SQL seguro y validado. El pipeline combina RAG de tres capas con structured output de Claude Haiku y guardrails de seguridad multicapa para garantizar que ningún SQL destructivo llegue a ejecutarse.**
+**Cualquier persona de negocio puede obtener información de su base de datos escribiendo en lenguaje natural — sin saber SQL, sin depender de un equipo técnico.**
 
-El diferencial frente a un Text-to-SQL naive es el knowledge base enriquecido: en lugar de pasarle al LLM el schema crudo de la DB, el sistema construye contexto semántico en tres niveles — descripciones de tablas con sinónimos en lenguaje natural, patrones de JOIN para casos de negocio reales y ejemplos few-shot de pregunta→SQL resuelto. Ese contexto se indexa en pgvector y se recupera por similitud antes de cada generación, reduciendo alucinaciones y aumentando la precisión en queries complejos con múltiples tablas.
+Un CEO que quiere saber qué sucursal facturó más este mes, un equipo de marketing que necesita segmentar clientes, un analista financiero buscando tendencias — todos pueden hacer esas preguntas directamente. El sistema las convierte en SQL seguro, lo valida y devuelve los resultados.
 
-![Tests](https://img.shields.io/badge/tests-68%20passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.13-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688)
+**Y no solo personas: la misma API es una tool que un agente de IA puede llamar** cuando necesita datos de una base de datos para completar su tarea.
+
+![Tests](https://img.shields.io/badge/tests-101%20passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.13-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688) ![LangSmith](https://img.shields.io/badge/observability-LangSmith-ff6f4a)
+
+---
+
+## El problema que resuelve
+
+En la mayoría de las empresas, obtener datos de negocio requiere abrir un ticket al equipo técnico, esperar, y recibir una query que quizás no era exactamente lo que se necesitaba. Este sistema elimina ese cuello de botella.
+
+---
+
+## Dos consumidores: personas y agentes de IA
+
+El sistema expone una API HTTP simple (`POST /query` → polling del resultado). Eso lo hace consumible por dos tipos de cliente:
+
+- **Personas** — a través del frontend, escribiendo preguntas en lenguaje natural.
+- **Agentes de IA** — un agente autónomo que encadena herramientas para resolver una tarea puede registrar este servicio como una de sus *tools*. Cuando necesita un dato que vive en una base de datos, llama a la API en lenguaje natural y recibe un resultado estructurado y validado para su siguiente paso de razonamiento.
+
+Y es justo en el caso del agente donde **los guardrails dejan de ser un lujo y pasan a ser críticos**: un agente generando SQL sin supervisión humana es exactamente el escenario donde un `DROP TABLE` accidental hace daño real. La seguridad por construcción de este sistema convierte un Text-to-SQL en una tool que podés exponer a un agente sin miedo — y cada tool call queda trazada en LangSmith.
+
+---
+
+## Por qué funciona mejor que un Text-to-SQL naive
+
+El diferencial está en **cómo se construye el contexto que recibe el LLM**.
+
+Un sistema naive le pasa el schema SQL crudo al modelo — nombres de tablas y columnas en inglés técnico, sin contexto de negocio. El resultado son queries incorrectas, columnas alucinadas, JOINs equivocados.
+
+Este sistema construye un knowledge base de tres capas antes de cada generación:
+
+| Capa | Qué aporta |
+|---|---|
+| **Schema semántico** | Cada tabla descrita con sinónimos en lenguaje natural. `branches` = sucursal, tienda, local, outlet. El LLM entiende lo que el usuario realmente pregunta. |
+| **Patrones de JOIN** | Cómo combinar tablas para casos de negocio reales. "Ventas por país" → `orders → branches → cities → countries`. No hay que inferirlo. |
+| **Few-shot examples** | Pares pregunta→SQL resueltos del dominio real. El modelo aprende el patrón correcto con ejemplos concretos. |
+
+Este enfoque fue el cambio más significativo del proyecto: pasó de generar queries incorrectas a resolver consultas con 5 JOINs y GROUP BY sin fallos.
+
+El knowledge base se carga con `POST /api/v1/admin/reindex-knowledge` y se actualiza periódicamente via Celery Beat.
+
+---
+
+## Seguridad por construcción
+
+Ningún SQL destructivo puede ejecutarse — no por validación condicional, sino por arquitectura.
+
+Los guardrails corren **antes** del cache y **antes** de la ejecución. Si alguno bloquea, el pipeline lanza `QueryBlockedError` y el `return` nunca se alcanza. No existe camino por donde un `DROP TABLE`, `DELETE` o `UPDATE` llegue a la base de datos del cliente.
+
+El `GuardrailFactory` ejecuta tres validators en secuencia (se agregan nuevos sin tocar la capa de servicios):
+
+- **`SqlValidator`** — bloquea operaciones destructivas (`DROP`, `DELETE`, `UPDATE`, `TRUNCATE`, `ALTER`, `INSERT`).
+- **`SchemaValidator`** — bloquea queries que referencian tablas fuera del schema indexado.
+- **`SensitiveDataValidator`** — bloquea acceso a datos sensibles (`password`, `salary`, `ssn`, etc.).
+
+---
+
+## Observabilidad real con LangSmith
+
+Llevar un pipeline de IA a producción sin observabilidad es volar a ciegas. Sabés que algo falló, pero no dónde ni por qué.
+
+Con LangSmith integrado, cada request genera un trace completo con todos los pasos visibles:
+
+```
+query-pipeline
+├── cache-check        — ¿había SQL cacheado?
+├── embedding          — vectorización de la pregunta
+├── rag-retrieval      — qué chunks del knowledge base recuperó (cantidad + tablas)
+├── sql-generation-chain                — input al LLM, output, tokens, costo, latencia
+│     └── claude-haiku-4-5-20251001
+├── guardrail-SqlValidator              — blocked: false
+├── guardrail-SchemaValidator           — blocked: false
+├── guardrail-SensitiveDataValidator    — blocked: "SQL accede a dato sensible: salary"
+└── sql-execution      — cuántas filas devolvió
+```
+
+Cada run lleva inputs y outputs explícitos: `rag-retrieval` muestra cuántos chunks recuperó y de qué tablas, cada `guardrail-*` muestra el SQL evaluado y si bloqueó (con el motivo), y `sql-execution` muestra el `row_count`. Cuando un guardrail bloquea una query, LangSmith muestra exactamente qué SQL generó el LLM y por qué se bloqueó — sin buscar en logs.
+
+La instrumentación está envuelta en `try/except` de punta a punta: **si LangSmith falla, el pipeline sigue corriendo**. La observabilidad nunca puede tumbar producción.
 
 ---
 
 ## Arquitectura
 
-Una consulta en lenguaje natural entra por un endpoint HTTP con rate limiting, se encola como tarea Celery, pasa por validación de guardrails, se ejecuta contra la base de datos del cliente y devuelve filas reales via long polling.
+Una consulta entra por un endpoint HTTP con rate limiting, se encola como tarea Celery, pasa por validación de guardrails, se ejecuta contra la base de datos del cliente y devuelve filas reales via long polling.
 
 ```mermaid
 flowchart TD
@@ -35,106 +113,43 @@ flowchart TD
     Result -->|HTTP 200 SQLResult + filas reales| Client
 ```
 
+7 capas estrictas: `api → services → integrations → guardrails → repositories → models → schemas`. Los services orquestan, los repositories acceden a storage, nunca al revés.
+
 ---
 
 ## Stack
 
 | Componente | Rol |
 |---|---|
-| FastAPI | Capa HTTP: routing, validación de request/response, integración de rate limiting |
-| PostgreSQL + pgvector | DB interna de la app (historial de queries, embeddings de schema con búsqueda vectorial) |
-| Redis | Broker de Celery, cache de SQL generado, contadores de rate limit de slowapi |
-| Celery + Beat | Procesamiento asíncrono de queries, re-indexado periódico del schema |
-| Gemini (Google AI) | Embeddings de texto (`gemini-embedding-001`) |
-| Claude Haiku (Anthropic) | Generación de SQL estructurado |
-| slowapi | Rate limiting por endpoint con contadores persistidos en Redis |
-| Alembic | Migraciones de base de datos, incluyendo setup de la extensión pgvector |
-| React + Vite | Frontend para ingresar consultas en lenguaje natural y visualizar resultados |
+| FastAPI + Celery | API async con procesamiento en background |
+| PostgreSQL + pgvector | Storage interno y búsqueda vectorial del knowledge base |
+| Redis | Broker de Celery, cache de SQL generado, contadores de rate limit |
+| Gemini embeddings | Vectorización del knowledge base y de cada query (`gemini-embedding-001`) |
+| Claude Haiku | Generación de SQL estructurado con Pydantic output |
+| LangSmith | Observabilidad del pipeline completo |
+| React + Vite | Frontend para consultas en lenguaje natural |
 
 ---
 
-## Arquitectura de 7 Capas
-
-| Capa | Módulo | Responsabilidad |
-|---|---|---|
-| `api/` | routers | Routing HTTP y contratos de request/response. Sin lógica de negocio. |
-| `services/` | query_service, embedding_service, indexing_service, tasks | Orquestación entre capas. Los services llaman a repositories, nunca al revés. |
-| `integrations/` | llm_client, chain | Wrappers de clientes externos: Gemini para embeddings, Anthropic para SQL. |
-| `guardrails/` | factory, validators | Validación de SQL via Factory Pattern. Se agregan validators sin tocar services. |
-| `repositories/` | schema_repository, query_repository | Acceso a storage: búsqueda vectorial con pgvector e historial relacional de queries. |
-| `models/` | clases SQLModel | Definiciones de tablas de base de datos (`table=True`). |
-| `schemas/` | request, response, structured output | Contratos Pydantic sin tabla en DB. |
-
----
-
-## Schemas de Respuesta
-
-| Schema | Cuándo | Contiene |
-|---|---|---|
-| `QueryResponse` | POST 202 — ACK inmediato | `task_id`, `status`, `message` |
-| `SQLResult` | GET 200 — resultado final | SQL + metadatos del LLM + filas reales de CLIENT_DB |
-
-`SQLResult` **no** hereda de `SQLOutput`. `SQLOutput` es el contrato con el LLM (structured output, cambia si cambia el modelo o el prompt). `SQLResult` es el contrato con el cliente HTTP (cambia si evoluciona la API). Separarlos evita que un cambio en el prompt rompa silenciosamente la forma de la respuesta HTTP.
-
----
-
-## Guardrails
-
-El `GuardrailFactory` ejecuta cada validator en secuencia antes de que cualquier SQL llegue a `QueryRepository`.
-
-- **`DropValidator`** — bloquea sentencias DDL destructivas: `DROP TABLE`, `CREATE`, `ALTER`.
-- **`DeleteValidator`** — bloquea `DELETE FROM` y `TRUNCATE`.
-- **`UpdateValidator`** — bloquea mutaciones `UPDATE SET`.
-
-Las queries destructivas nunca llegan a `QueryRepository`. El invariante es estructural: guardrails corren → `raise QueryBlockedError` → el `return` nunca se alcanza. No existe ningún camino condicional por donde SQL destructivo pueda colarse.
-
----
-
-## RAG Enriquecido — El Knowledge Base
-
-El contexto que recibe el LLM no es el schema SQL crudo. Antes de generar, el sistema recupera por similitud vectorial los fragmentos más relevantes del knowledge base, que tiene tres capas:
-
-| Capa | Qué contiene | Ejemplo |
-|---|---|---|
-| **Schema** | Descripción de cada tabla con sinónimos en lenguaje natural, columnas, relaciones y cuándo usarla | `"Tabla 'branches' — sucursal, tienda, local, outlet…"` |
-| **Joins** | Cómo combinar tablas para casos de negocio reales, con el SQL exacto del JOIN | `"Ventas por país: orders → branches → cities → countries"` |
-| **Few-shot** | Pares pregunta real → SQL resuelto para guiar el modelo con ejemplos del dominio | `"¿Cuál es el producto más vendido este mes? → SELECT …"` |
-
-Este enfoque permite que el LLM resuelva correctamente preguntas en lenguaje coloquial ("¿qué tienda facturó más?") y queries con múltiples JOINs que un schema crudo no haría obvios.
-
-El knowledge base se carga una sola vez con `POST /api/v1/admin/reindex-knowledge` y se actualiza periódicamente via Celery Beat.
-
----
-
-## Correr Localmente
+## Correr localmente
 
 ```bash
-# 1. Clonar
 git clone <repo-url>
 cd text-to-sql-guardrails
-
-# 2. Entorno
 cp .env.example .env
-# Completar GEMINI_API_KEY, ANTHROPIC_API_KEY y SECRET_KEY en .env
+# Completar GEMINI_API_KEY, ANTHROPIC_API_KEY, SECRET_KEY
+# Opcional observabilidad: LANGCHAIN_API_KEY (si está vacío, el pipeline corre igual)
 
-# 3. Levantar stack backend (API + Celery + PostgreSQL + Redis)
-docker compose up --build
-
-# 4. (Opcional) Levantar también el frontend con HMR
-docker compose --profile dev up --build
+docker compose up --build                 # backend: API + Celery + PostgreSQL + Redis
+docker compose --profile dev up --build   # + frontend React con HMR
 ```
 
-### Primer deploy en entorno cloud (AWS / Railway)
-
-Una vez que la API levanta, ejecutar estos endpoints en orden desde Swagger (`/docs`):
-
+Primer deploy — ejecutar en orden desde `/docs` (idempotentes):
 ```
-POST /api/v1/admin/seed-client      → carga datos de prueba en la DB del cliente
-POST /api/v1/admin/reindex-schema   → indexa el schema de la DB en pgvector
+POST /api/v1/admin/seed-client       → carga datos de prueba en la DB del cliente
+POST /api/v1/admin/reindex-schema    → indexa el schema de la DB en pgvector
 POST /api/v1/admin/reindex-knowledge → indexa el knowledge base (joins, few-shots)
 ```
-
-Estos pasos son idempotentes — si ya hay datos no modifican nada.
 
 ---
 
@@ -142,55 +157,36 @@ Estos pasos son idempotentes — si ya hay datos no modifican nada.
 
 | Variable | Descripción | Requerida |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL interna (historial de queries y embeddings de schema). Formato asyncpg: `postgresql+asyncpg://...` | Sí |
-| `CLIENT_DATABASE_URL` | PostgreSQL del cliente (datos de negocio consultados por `execute_sql`). Formato psycopg2: `postgresql+psycopg2://...` | Sí |
-| `REDIS_URL` | Redis para broker Celery, cache SQL y contadores de rate limit | Sí |
-| `GEMINI_API_KEY` | API key de Google AI Studio — usada para embeddings (`gemini-embedding-001`) | Sí |
-| `ANTHROPIC_API_KEY` | API key de Anthropic — usada para generación de SQL (Claude Haiku) | Sí |
+| `DATABASE_URL` | PostgreSQL interna (historial de queries y embeddings). Formato asyncpg | Sí |
+| `CLIENT_DATABASE_URL` | PostgreSQL del cliente (datos de negocio consultados por `execute_sql`). Formato psycopg2 | Sí |
+| `REDIS_URL` | Redis para broker Celery, cache SQL y rate limit | Sí |
+| `GEMINI_API_KEY` | Google AI Studio — embeddings | Sí |
+| `ANTHROPIC_API_KEY` | Anthropic — generación de SQL (Claude Haiku) | Sí |
 | `SECRET_KEY` | Clave para signing interno | Sí |
+| `LANGCHAIN_API_KEY` | LangSmith — observabilidad. Si está vacío, el pipeline corre sin trazas | No |
+| `LANGCHAIN_PROJECT` | Proyecto de LangSmith donde aparecen los runs | No (default: `text-to-sql-guardrails`) |
 | `EMBEDDING_MODEL` | Modelo de embeddings de Gemini | No (default: `models/gemini-embedding-001`) |
-| `REINDEX_INTERVAL_SECONDS` | Frecuencia del re-indexado periódico del schema | No (default: `86400`) |
+| `REINDEX_INTERVAL_SECONDS` | Frecuencia del re-indexado periódico | No (default: `86400`) |
 
-> `CLIENT_DATABASE_URL` es la base de datos del cliente — donde viven sus datos de negocio. Es distinta de `DATABASE_URL`, que es la DB interna donde se almacenan `query_history` y los embeddings de schema.
-
----
-
-## Frontend
-
-Single-page app React + Vite en `frontend/`. En producción se despliega en **Vercel** apuntando a `VITE_API_URL` de la API en AWS.
-
-Para desarrollo local con HMR:
-
-```bash
-# Con Docker (recomendado — mismo entorno que producción)
-docker compose --profile dev up
-
-# Sin Docker
-cd frontend
-cp .env.example .env.local   # setear VITE_API_URL=http://localhost:8000
-npm ci
-npm run dev
-```
-
-El `task_id` devuelto por el POST vive solo en el closure del `setInterval` — nunca toca el DOM y es liberado por el garbage collector cuando el polling termina.
+> `CLIENT_DATABASE_URL` es la DB del cliente (sus datos de negocio); `DATABASE_URL` es la DB interna (`query_history` + embeddings de schema). Son distintas a propósito.
 
 ---
 
 ## Decisiones Técnicas Destacadas
 
-1. **`SQLResult` no hereda de `SQLOutput`** — `SQLOutput` es el contrato con el LLM (cambia con el modelo o el prompt), `SQLResult` es el contrato HTTP (cambia con la evolución de la API). La herencia los acoplaría.
-2. **Cache hit ejecuta SQL fresco** — el string SQL es determinístico y vale la pena cachearlo; las filas en la DB del cliente no lo son. Cachear resultados devolvería datos obsoletos.
-3. **Redis como storage de slowapi, no memoria** — con contadores en memoria cada réplica del proceso tiene su propio límite, multiplicando efectivamente la tasa permitida por el número de workers.
-4. **`task_id` nunca llega al DOM en el frontend** — vive solo en el closure del `setInterval`, evitando problemas de estado obsoleto si el componente se re-renderiza durante el polling.
-5. **La posición de guardrails garantiza el invariante** — ubicar guardrails antes de `cache.setex` y `execute_sql` significa que ningún SQL destructivo se cachea ni se ejecuta, por construcción.
-6. **Entrypoint sin seed ni reindex** — deploy en ~30s. El seed y el reindex se invocan una sola vez manualmente via endpoints admin después del primer deploy.
+1. **`SQLResult` no hereda de `SQLOutput`** — `SQLOutput` es el contrato con el LLM (cambia con el modelo o el prompt), `SQLResult` es el contrato HTTP (cambia con la evolución de la API). La herencia los acoplaría y un cambio de prompt rompería la respuesta HTTP en silencio.
+2. **Cache hit ejecuta SQL fresco** — el string SQL es determinístico y se cachea; las filas de la DB del cliente no. Cachear resultados devolvería datos obsoletos.
+3. **Redis como storage de slowapi, no memoria** — con contadores en memoria cada réplica tiene su propio límite, multiplicando la tasa permitida por el número de workers.
+4. **`task_id` nunca llega al DOM** — vive solo en el closure del `setInterval`, evitando estado obsoleto si el componente se re-renderiza durante el polling.
+5. **La posición de los guardrails garantiza el invariante** — corren antes de `cache.setex` y `execute_sql`, así ningún SQL destructivo se cachea ni se ejecuta, por construcción.
+6. **La observabilidad no puede romper el pipeline** — toda la instrumentación de LangSmith está envuelta en `try/except`; si falla la captura de un trace, la query se resuelve igual.
+7. **Entrypoint sin seed ni reindex** — deploy en ~30s. Seed y reindex se invocan una sola vez via endpoints admin tras el primer deploy.
 
 ---
 
-## Roadmap (Fase 7+)
+## Roadmap
 
 - Auth real en `admin_router` (API key o JWT service-to-service)
 - Rate limiting por `user_id` además de por IP
 - Paginación en `SQLResult.results` para queries con muchas filas
 - Tests de carga del rate limiter en CI
-- Observabilidad: métricas de Prometheus, trazas de OpenTelemetry

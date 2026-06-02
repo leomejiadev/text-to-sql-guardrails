@@ -1,9 +1,4 @@
-"""Cliente LLM configurable por proveedor (OpenAI o Gemini).
-
-Usa structured output en lugar de parsing manual: la API garantiza que la
-respuesta sea JSON conforme al schema de SQLOutput, eliminando errores de
-parseo y reduciendo prompts de formato en el contexto.
-"""
+"""Cliente LLM con structured output que devuelve SQLOutput validado."""
 import os
 
 from langchain_anthropic import ChatAnthropic

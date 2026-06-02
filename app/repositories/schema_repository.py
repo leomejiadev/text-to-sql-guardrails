@@ -5,7 +5,6 @@ from app.services.embedding_service import EmbeddingService
 
 class SchemaRepository:
     def __init__(self, session, embedding_service: EmbeddingService):
-        # Inyección de dependencias: permite mockear session y embedding en tests
         self._session = session
         self._embedding = embedding_service
 

@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from uuid import uuid4
 
 from app.schemas.query_request import QueryRequest
 from app.services import tasks
@@ -17,12 +18,9 @@ limiter = Limiter(key_func=get_remote_address)
 @router.post("/query", status_code=202)
 @limiter.limit("10/10 minutes")
 def submit_query(request: Request, body: QueryRequest) -> dict:
-    """Encola la tarea y responde inmediatamente con el task_id.
-
-    `request: Request` requerido por slowapi para leer IP. El body se renombra
-    a `body` para evitar colisión con el parámetro `request` de FastAPI.
-    """
-    result = tasks.process_query.delay(query=body.query, user_id=body.user_id)
+    """Encola la query y devuelve el task_id para hacer polling del resultado."""
+    trace_id = str(uuid4())
+    result = tasks.process_query.delay(query=body.query, user_id=body.user_id, trace_id=trace_id)
     return {"task_id": result.id, "status": "queued", "message": "processing"}
 
 

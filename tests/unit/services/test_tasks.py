@@ -38,6 +38,59 @@ class TestProcessQueryTask:
             assert output["blocked"] is True
             assert "SQL injection detected" in output["block_reason"]
 
+    def test_process_query_accepts_optional_trace_id(self):
+        """process_query.delay debe aceptar trace_id sin romper firma."""
+        from app.services.tasks import process_query
+
+        with patch("app.services.tasks._run_pipeline") as mock_pipeline:
+            fake_output = MagicMock()
+            fake_output.model_dump.return_value = {"sql": "SELECT 1"}
+            mock_pipeline.return_value = fake_output
+
+            result = process_query.apply(
+                kwargs={"query": "q", "user_id": "u", "trace_id": "trace-abc"}
+            )
+
+            assert result.state == states.SUCCESS
+            # _run_pipeline debe recibir el trace_id propagado desde la tarea
+            mock_pipeline.assert_called_once_with("q", "u", "trace-abc")
+
+    def test_run_pipeline_forwards_trace_id_to_service(self):
+        """_run_pipeline debe pasar trace_id al QueryService.process()."""
+        from app.services import tasks
+
+        with patch("app.services.tasks.create_engine"), \
+             patch("app.services.tasks.Session"), \
+             patch("app.services.tasks.EmbeddingService"), \
+             patch("app.services.tasks.SchemaRepository"), \
+             patch("app.services.tasks.QueryRepository"), \
+             patch("app.services.tasks.SQLChain"), \
+             patch("app.services.tasks.QueryService") as MockService:
+            instance = MockService.return_value
+            instance.process.return_value = MagicMock()
+
+            tasks._run_pipeline("q", "u", trace_id="trace-xyz")
+
+            instance.process.assert_called_once_with("q", "u", trace_id="trace-xyz")
+
+    def test_run_pipeline_trace_id_is_optional(self):
+        """_run_pipeline sigue funcionando si no se pasa trace_id."""
+        from app.services import tasks
+
+        with patch("app.services.tasks.create_engine"), \
+             patch("app.services.tasks.Session"), \
+             patch("app.services.tasks.EmbeddingService"), \
+             patch("app.services.tasks.SchemaRepository"), \
+             patch("app.services.tasks.QueryRepository"), \
+             patch("app.services.tasks.SQLChain"), \
+             patch("app.services.tasks.QueryService") as MockService:
+            instance = MockService.return_value
+            instance.process.return_value = MagicMock()
+
+            tasks._run_pipeline("q", "u")
+
+            instance.process.assert_called_once_with("q", "u", trace_id=None)
+
     def test_llm_error_triggers_retry(self):
         """LLMError debe intentar retry en lugar de fallar inmediatamente."""
         from app.integrations.llm_client import LLMError

@@ -6,7 +6,6 @@ from app.guardrails.sql_validator import SqlValidator
 
 
 class GuardrailFactory:
-    # Lista estática de clases — agregar un validator aquí es suficiente para activarlo
     _guardrails = [SqlValidator, SchemaValidator, SensitiveDataValidator]
 
     @classmethod

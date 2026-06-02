@@ -1,11 +1,4 @@
-"""Router de operaciones administrativas — no expuesto a usuarios finales.
-
-Está separado de `query_router` porque tiene un perfil de seguridad
-distinto: en producción requiere auth estricta (p. ej. service-to-service)
-y sus endpoints mutan estado compartido (el índice de schema, caches).
-Mantenerlos en otro router permite aplicarles middlewares diferentes sin
-contaminar el flujo del usuario final.
-"""
+"""Endpoints administrativos para re-indexar schema, knowledge base y seedear la DB del cliente."""
 import os
 
 from fastapi import APIRouter, Request
@@ -34,11 +27,7 @@ limiter = Limiter(key_func=get_remote_address)
 @router.post("/reindex-schema")
 @limiter.limit("5/10 minutes")
 async def reindex_schema(request: Request) -> JSONResponse:
-    """Re-indexa el schema de la DB destino en el vector store.
-
-    `request: Request` es requerido por slowapi para leer la IP del cliente.
-    FastAPI lo inyecta automáticamente — no aparece en el schema OpenAPI.
-    """
+    """Re-indexa el schema de la DB destino en el vector store."""
     try:
         sync_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "+psycopg2")
         engine = create_engine(sync_url)
@@ -105,11 +94,7 @@ async def reindex_knowledge(request: Request) -> JSONResponse:
 @router.post("/seed-client")
 @limiter.limit("3/hour")
 async def seed_client(request: Request) -> JSONResponse:
-    """Seedea la DB del cliente con datos iniciales si está vacía.
-
-    Idempotente: si la DB ya tiene datos, retorna sin modificar nada.
-    Útil en entornos cloud (AWS RDS) donde no hay docker-entrypoint-initdb.d.
-    """
+    """Seedea la DB del cliente con datos iniciales (idempotente)."""
     try:
         result = seed_run()
         return JSONResponse(status_code=200, content=result)

@@ -1,18 +1,13 @@
-"""LCEL chain que conecta recuperación de schema con generación de SQL.
-
-La cadena sigue el patrón: retriever → prompt → model → parser
-donde 'retriever' es la capa de SchemaRepository (ejecutada en query_service
-antes de llamar a esta chain), y aquí encadenamos prompt | model | parser.
-"""
+"""LCEL chain que genera SQL estructurado a partir de un schema y una consulta del usuario."""
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.integrations.llm_client import LLMError, _build_llm
 from app.schemas.sql_output import SQLOutput
 
-_PROMPT_TEMPLATE = """\
+_SYSTEM_PROMPT = """\
 Eres un experto en SQL para StarBrew, empresa global de cafeterías.
-Tu única fuente de verdad es el schema proporcionado abajo. \
+Tu única fuente de verdad es el schema proporcionado por el usuario. \
 Nunca uses columnas que no aparezcan literalmente en ese schema.
 
 REGLAS CRÍTICAS:
@@ -32,39 +27,55 @@ EJEMPLO CRÍTICO — error común a evitar:
      JOIN cities ci ON ci.id = c.city_id
      WHERE ci.name = 'Buenos Aires'
 
-Schema disponible (es tu única fuente de verdad):
-{schema_context}
-
-Pregunta del usuario: {query}
-
-{format_instructions}
-
 IMPORTANTE: response_hint debe ser una respuesta en lenguaje natural útil para \
 el usuario final — NO una descripción técnica del SQL. \
 Ejemplo correcto: "Encontré 3 clientes en Buenos Aires: Juan, María y Fernando." \
 Ejemplo incorrecto: "Esta consulta selecciona los nombres usando WHERE city..."
 """
 
+_HUMAN_PROMPT = """\
+Schema disponible (es tu única fuente de verdad):
+{schema_context}
+
+Pregunta del usuario: {query}
+
+{format_instructions}
+"""
+
 
 class SQLChain:
     def __init__(self):
-        # PydanticOutputParser inyecta format_instructions en el prompt para
-        # que el modelo sepa exactamente el JSON schema que debe producir
         parser = PydanticOutputParser(pydantic_object=SQLOutput)
-        prompt = ChatPromptTemplate.from_template(_PROMPT_TEMPLATE)
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", _SYSTEM_PROMPT),
+                ("human", _HUMAN_PROMPT),
+            ]
+        )
         model = _build_llm()
-        # LCEL: prompt formatea variables → model genera texto → parser extrae SQLOutput
-        self._chain = prompt | model | parser
+        self._prompt = prompt
+        self._chain = (prompt | model | parser).with_config(
+            run_name="sql-generation-chain",
+            tags=["production", "text-to-sql"],
+            metadata={"version": "1.0"},
+        )
         self._format_instructions = parser.get_format_instructions()
 
-    def run(self, query: str, schema_context: str) -> SQLOutput:
+    def run(
+        self,
+        query: str,
+        schema_context: str,
+        trace_id: str | None = None,
+    ) -> SQLOutput:
+        config = {"metadata": {"trace_id": trace_id}} if trace_id else {}
         try:
             return self._chain.invoke(
                 {
                     "query": query,
                     "schema_context": schema_context,
                     "format_instructions": self._format_instructions,
-                }
+                },
+                config=config,
             )
         except Exception as exc:
             raise LLMError(str(exc)) from exc
